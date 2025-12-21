@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Price Data Manager</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        
+        .container {
+            background-color: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+        
+        select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        
+        .file-upload-area {
+            text-align: center;
+            padding: 30px;
+            border: 2px dashed #ddd;
+            border-radius: 8px;
+            margin: 20px 0;
+            background-color: #fff;
+        }
+        
+        button {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+            margin-top: 10px;
+        }
+        
+        .primary-btn {
+            background-color: #007bff;
+            color: white;
+        }
+        
+        .primary-btn:hover {
+            background-color: #0056b3;
+        }
+        
+        .primary-btn:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        
+        .success-btn {
+            background-color: #28a745;
+            color: white;
+            margin-top: 20px;
+        }
+        
+        .success-btn:hover {
+            background-color: #1e7e34;
+        }
+        
+        .outline-btn {
+            background-color: transparent;
+            border: 1px solid #007bff;
+            color: #007bff;
+        }
+        
+        .outline-btn:hover {
+            background-color: #007bff;
+            color: white;
+        }
+        
+        .file-info {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+            display: none;
+        }
+        
+        .info-text {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 4px;
+            color: #856404;
+        }
+        
+        .status-message {
+            padding: 10px;
+            margin-top: 10px;
+            border-radius: 4px;
+            display: none;
+        }
+        
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="form-group">
+            <label for="archiveType">Тип архива</label>
+            <select id="archiveType">
+                <option value="zip">ZIP архив (.zip)</option>
+                <option value="tar">TAR архив (.tar.gz)</option>
+            </select>
+        </div>
+        
+        <div class="file-upload-area">
+            <p>Нажмите кнопку ниже для выбора файла</p>
+            <input type="file" id="fileInput" accept=".zip,.tar,.tar.gz,.gz" style="display: none;">
+            <button class="outline-btn" id="browseBtn">Выбрать файл</button>
+            
+            <div class="file-info" id="fileInfo">
+                <strong>Выбранный файл:</strong> <span id="fileName"></span>
+                <br>
+                <strong>Размер:</strong> <span id="fileSize"></span>
+            </div>
+        </div>
+        
+        <button class="primary-btn" id="uploadBtn" disabled>Загрузить архив</button>
+        
+        <div class="status-message" id="uploadStatus"></div>
+    </div>
+    
+    <div class="container">
+        <div class="info-text">
+            <p>Скачайте все данные о ценах в ZIP архиве, содержащем файл data.csv</p>
+        </div>
+        
+        <button class="success-btn" id="downloadBtn">Скачать все данные как ZIP</button>
+        
+        <div class="status-message" id="downloadStatus"></div>
+    </div>
+
+    <script>
+        // Элементы DOM
+        const fileInput = document.getElementById('fileInput');
+        const browseBtn = document.getElementById('browseBtn');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileName = document.getElementById('fileName');
+        const fileSize = document.getElementById('fileSize');
+        const uploadStatus = document.getElementById('uploadStatus');
+        const downloadStatus = document.getElementById('downloadStatus');
+        const archiveType = document.getElementById('archiveType');
+        
+        let selectedFile = null;
+        
+        // Обработчик для кнопки выбора файла
+        browseBtn.addEventListener('click', function() {
+            fileInput.click();
+        });
+        
+        // Обработка выбора файла через input
+        fileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            handleFile(file);
+        });
+        
+        // Обработка файла
+        function handleFile(file) {
+            if (!file) return;
+            
+            // Проверка типа файла
+            const validTypes = ['.zip', '.tar', '.gz'];
+            const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+            
+            if (!validTypes.some(type => file.name.toLowerCase().endsWith(type))) {
+                showStatus('Пожалуйста, выберите корректный архивный файл (ZIP или TAR)', 'error', uploadStatus);
+                clearFile();
+                return;
+            }
+            
+            selectedFile = file;
+            
+            // Показать информацию о файле
+            fileName.textContent = file.name;
+            fileSize.textContent = formatFileSize(file.size);
+            fileInfo.style.display = 'block';
+            uploadBtn.disabled = false;
+            
+            // Автоматически выбрать тип архива
+            if (file.name.endsWith('.tar') || file.name.endsWith('.tar.gz') || file.name.endsWith('.gz')) {
+                archiveType.value = 'tar';
+            } else {
+                archiveType.value = 'zip';
+            }
+            
+            showStatus('Файл выбран успешно', 'success', uploadStatus);
+        }
+        
+        // Форматирование размера файла
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Байт';
+            const k = 1024;
+            const sizes = ['Байт', 'КБ', 'МБ', 'ГБ'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        // Очистка файла
+        function clearFile() {
+            selectedFile = null;
+            fileInput.value = '';
+            fileInfo.style.display = 'none';
+            uploadBtn.disabled = true;
+            uploadStatus.style.display = 'none';
+        }
+        
+        // Показать статус
+        function showStatus(message, type, element) {
+            element.textContent = message;
+            element.className = 'status-message ' + type;
+            element.style.display = 'block';
+            
+            // Автоматически скрыть сообщение об успехе через 3 секунды
+            if (type === 'success') {
+                setTimeout(() => {
+                    element.style.display = 'none';
+                }, 3000);
+            }
+        }
+        
+        // Загрузка файла на сервер
+        async function uploadFile() {
+            if (!selectedFile) return;
+            
+            const type = archiveType.value;
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = 'Загрузка...';
+            
+            try {
+                // Используем FormData для отправки файла
+                const formData = new FormData();
+                formData.append('archive', selectedFile);
+                
+                const response = await fetch(`/api/v0/prices?type=${type}`, {
+                    method: 'POST',
+                    body: formData
+                    // Не устанавливаем Content-Type заголовок, браузер установит его автоматически с boundary для FormData
+                });
+                
+                if (response.ok) {
+                    showStatus('Файл успешно загружен', 'success', uploadStatus);
+                    clearFile();
+                } else {
+                    const errorText = await response.text();
+                    throw new Error(`Ошибка загрузки: ${response.status} - ${errorText}`);
+                }
+            } catch (error) {
+                console.error("Произошла ошибка:", error);
+                showStatus(`Ошибка: ${error.message}`, 'error', uploadStatus);
+            } finally {
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = 'Загрузить архив';
+            }
+        }
+        
+        // Скачивание данных
+        async function downloadData() {
+            downloadBtn.disabled = true;
+            downloadBtn.textContent = 'Скачивание...';
+            downloadStatus.style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/v0/prices');
+                
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'prices.zip';
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+                    
+                    showStatus('Скачивание началось успешно!', 'success', downloadStatus);
+                } else {
+                    const errorText = await response.text();
+                    throw new Error(`Скачивание не удалось: ${response.status} - ${errorText}`);
+                }
+            } catch (error) {
+                console.error("Произошла ошибка:", error);
+                showStatus(`Ошибка: ${error.message}`, 'error', downloadStatus);
+            } finally {
+                downloadBtn.disabled = false;
+                downloadBtn.textContent = 'Скачать все данные как ZIP';
+            }
+        }
+        
+        // Назначение обработчиков событий
+        uploadBtn.addEventListener('click', uploadFile);
+        downloadBtn.addEventListener('click', downloadData);
+        
+        // Инициализация
+        window.addEventListener('DOMContentLoaded', () => {
+            uploadStatus.style.display = 'none';
+            downloadStatus.style.display = 'none';
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+/docker-compose.yaml
+/.env
+/docker-compose.production.yaml
+/main
+/.github
