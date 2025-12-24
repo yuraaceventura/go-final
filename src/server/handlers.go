@@ -2,6 +2,7 @@ package server
 
 import (
 	"archive/zip"
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -88,54 +89,78 @@ func handlePostPrices(w http.ResponseWriter, r *http.Request) {
 		startIndex = 1
 	}
 
-	successfulInserts := 0
+	validRecords := make([]db.PriceRecord, 0)
+	validationErrors := make([]string, 0)
+
 	for i := startIndex; i < len(records); i++ {
 		record := records[i]
-		if len(record) >= 5 {
-			_, err := strconv.Atoi(record[0])
-			if err != nil {
-				log.Printf("Invalid ID in record %d: %v", i, err)
-				continue
-			}
-
-			name := record[1]
-			category := record[2]
-			price, err := strconv.ParseFloat(record[3], 64)
-			if err != nil {
-				log.Printf("Invalid price in record %d: %v", i, err)
-				continue
-			}
-
-			createDate, err := time.Parse("2006-01-02", record[4])
-			if err != nil {
-				createDate = time.Now()
-				log.Printf("Invalid date format in record %d, using current date: %v", i, err)
-			}
-
-			if err := db.InsertPrice(name, category, price, createDate); err != nil {
-				log.Printf("Failed to insert price at line %d: %v", i, err)
-			} else {
-				successfulInserts++
-			}
+		if len(record) < 5 {
+			validationErrors = append(validationErrors, fmt.Sprintf("Record %d: insufficient fields", i))
+			continue
 		}
+
+		id, err := strconv.Atoi(record[0])
+		if err != nil {
+			validationErrors = append(validationErrors, fmt.Sprintf("Record %d: invalid ID: %v", i, err))
+			continue
+		}
+
+		name := strings.TrimSpace(record[1])
+		if name == "" {
+			validationErrors = append(validationErrors, fmt.Sprintf("Record %d: empty name", i))
+			continue
+		}
+
+		category := strings.TrimSpace(record[2])
+		price, err := strconv.ParseFloat(record[3], 64)
+		if err != nil {
+			validationErrors = append(validationErrors, fmt.Sprintf("Record %d: invalid price: %v", i, err))
+			continue
+		}
+
+		if price < 0 {
+			validationErrors = append(validationErrors, fmt.Sprintf("Record %d: negative price", i))
+			continue
+		}
+
+		var createDate time.Time
+		if dateStr := strings.TrimSpace(record[4]); dateStr != "" {
+			createDate, err = time.Parse("2006-01-02", dateStr)
+			if err != nil {
+				validationErrors = append(validationErrors, fmt.Sprintf("Record %d: invalid date format: %v", i, err))
+				continue
+			}
+		} else {
+			createDate = time.Now()
+		}
+
+		validRecords = append(validRecords, db.PriceRecord{
+			ID:       id,
+			Name:     name,
+			Category: category,
+			Price:    price,
+			Date:     createDate,
+		})
 	}
 
-	stats, err := db.GetStats()
+	if len(validationErrors) > 0 {
+		log.Printf("Validation errors: %v", validationErrors)
+	}
+
+	response, err := db.InsertPricesWithStats(validRecords)
 	if err != nil {
-		http.Error(w, "Failed to get stats", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Failed to insert prices: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	response := UploadResponse{
-		TotalItems:      stats["total_items"].(int),
-		TotalCategories: stats["total_categories"].(int),
-		TotalPrice:      stats["total_price"].(float64),
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Failed to encode response: %v", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+	}
 }
 
+// Тут убрал временные файлы
 func handleGetPrices(w http.ResponseWriter, r *http.Request) {
 	prices, err := db.GetAllPrices()
 	if err != nil {
@@ -143,16 +168,14 @@ func handleGetPrices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	csvFile, err := os.CreateTemp("", "data-*.csv")
-	if err != nil {
-		http.Error(w, "Failed to create CSV file", http.StatusInternalServerError)
+	var csvBuffer bytes.Buffer
+	writer := csv.NewWriter(&csvBuffer)
+
+	if err := writer.Write([]string{"ID", "Name", "Category", "Price", "CreatedAt"}); err != nil {
+		http.Error(w, "Failed to write CSV header", http.StatusInternalServerError)
 		return
 	}
-	defer os.Remove(csvFile.Name())
-	defer csvFile.Close()
 
-	writer := csv.NewWriter(csvFile)
-	writer.Write([]string{"ID", "Name", "Category", "Price", "CreatedAt"})
 	for _, price := range prices {
 		record := []string{
 			strconv.Itoa(price.ID),
@@ -161,20 +184,20 @@ func handleGetPrices(w http.ResponseWriter, r *http.Request) {
 			strconv.FormatFloat(price.Price, 'f', 2, 64),
 			price.CreatedAt.Format("2006-01-02"),
 		}
-		writer.Write(record)
+		if err := writer.Write(record); err != nil {
+			http.Error(w, "Failed to write CSV record", http.StatusInternalServerError)
+			return
+		}
 	}
-	writer.Flush()
 
-	zipFile, err := os.CreateTemp("", "prices-*.zip")
-	if err != nil {
-		http.Error(w, "Failed to create zip file", http.StatusInternalServerError)
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		http.Error(w, "Failed to flush CSV", http.StatusInternalServerError)
 		return
 	}
-	defer os.Remove(zipFile.Name())
-	defer zipFile.Close()
 
-	zipWriter := zip.NewWriter(zipFile)
-	defer zipWriter.Close()
+	var zipBuffer bytes.Buffer
+	zipWriter := zip.NewWriter(&zipBuffer)
 
 	fileInArchive, err := zipWriter.Create("data.csv")
 	if err != nil {
@@ -182,22 +205,20 @@ func handleGetPrices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	csvContent, err := os.ReadFile(csvFile.Name())
-	if err != nil {
-		http.Error(w, "Failed to read CSV file", http.StatusInternalServerError)
+	if _, err := fileInArchive.Write(csvBuffer.Bytes()); err != nil {
+		http.Error(w, "Failed to write to archive", http.StatusInternalServerError)
 		return
 	}
 
-	fileInArchive.Write(csvContent)
-	zipWriter.Close()
-
-	zipData, err := os.ReadFile(zipFile.Name())
-	if err != nil {
-		http.Error(w, "Failed to read zip file", http.StatusInternalServerError)
+	if err := zipWriter.Close(); err != nil {
+		http.Error(w, "Failed to close archive", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", "attachment; filename=prices.zip")
-	w.Write(zipData)
+
+	if _, err := w.Write(zipBuffer.Bytes()); err != nil {
+		log.Printf("Failed to write response: %v", err)
+	}
 }

@@ -20,6 +20,14 @@ type Price struct {
 	CreatedAt time.Time
 }
 
+type PriceRecord struct {
+	ID       int
+	Name     string
+	Category string
+	Price    float64
+	Date     time.Time
+}
+
 func getDBConfig() (host, port, user, password, dbname string) {
 	host = os.Getenv("POSTGRES_HOST")
 	port = os.Getenv("POSTGRES_PORT")
@@ -83,10 +91,64 @@ func CloseDB() {
 	}
 }
 
-func InsertPrice(name, category string, price float64, created_at time.Time) error {
-	query := `INSERT INTO prices (name, category, price, created_at) VALUES ($1, $2, $3, $4)`
-	_, err := DB.Exec(query, name, category, price, created_at)
-	return err
+func InsertPricesWithStats(records []PriceRecord) (map[string]interface{}, error) {
+	tx, err := DB.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	// Используем отложенный откат
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	stmt, err := tx.Prepare("INSERT INTO prices (name, category, price, created_at) VALUES ($1, $2, $3, $4)")
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	// Собираем статистику по вставленным записям
+	insertedRecords := make([]PriceRecord, 0)
+	successfulInserts := 0
+
+	for _, record := range records {
+		_, err := stmt.Exec(record.Name, record.Category, record.Price, record.Date)
+		if err != nil {
+			log.Printf("Failed to insert record %d: %v", record.ID, err)
+			continue
+		}
+		successfulInserts++
+		insertedRecords = append(insertedRecords, record)
+	}
+
+	// Вычисляем статистику по вставленным записям
+	totalItems := successfulInserts
+	categories := make(map[string]bool)
+	totalPrice := 0.0
+
+	for _, record := range insertedRecords {
+		categories[record.Category] = true
+		totalPrice += record.Price
+	}
+
+	totalCategories := len(categories)
+
+	// Коммитим транзакцию
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// Возвращаем статистику только по вставленным записям
+	stats := map[string]interface{}{
+		"total_items":      totalItems,
+		"total_categories": totalCategories,
+		"total_price":      totalPrice,
+	}
+
+	return stats, nil
 }
 
 func GetAllPrices() ([]Price, error) {
@@ -106,34 +168,37 @@ func GetAllPrices() ([]Price, error) {
 		prices = append(prices, p)
 	}
 
+	// Проверяем ошибки после закрытия rows согласно документации
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	return prices, nil
 }
 
 func GetStats() (map[string]interface{}, error) {
 	stats := make(map[string]interface{})
 
-	// Total items
+	// Тут сделал в одни запрос для всей статистики
 	var totalItems int
-	err := DB.QueryRow("SELECT COUNT(*) FROM prices").Scan(&totalItems)
-	if err != nil {
-		return nil, err
-	}
-	stats["total_items"] = totalItems
-
-	// Total categories
 	var totalCategories int
-	err = DB.QueryRow("SELECT COUNT(DISTINCT category) FROM prices").Scan(&totalCategories)
-	if err != nil {
-		return nil, err
-	}
-	stats["total_categories"] = totalCategories
-
-	// Total price
 	var totalPrice float64
-	err = DB.QueryRow("SELECT COALESCE(SUM(price), 0) FROM prices").Scan(&totalPrice)
+
+	query := `
+		SELECT 
+			COUNT(*) as total_items,
+			COUNT(DISTINCT category) as total_categories,
+			COALESCE(SUM(price), 0) as total_price
+		FROM prices
+	`
+
+	err := DB.QueryRow(query).Scan(&totalItems, &totalCategories, &totalPrice)
 	if err != nil {
 		return nil, err
 	}
+
+	stats["total_items"] = totalItems
+	stats["total_categories"] = totalCategories
 	stats["total_price"] = totalPrice
 
 	return stats, nil
