@@ -96,8 +96,6 @@ func InsertPricesWithStats(records []PriceRecord) (map[string]interface{}, error
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
-
-	// Используем отложенный откат
 	defer func() {
 		if err != nil {
 			tx.Rollback()
@@ -110,10 +108,7 @@ func InsertPricesWithStats(records []PriceRecord) (map[string]interface{}, error
 	}
 	defer stmt.Close()
 
-	// Собираем статистику по вставленным записям
-	insertedRecords := make([]PriceRecord, 0)
 	successfulInserts := 0
-
 	for _, record := range records {
 		_, err := stmt.Exec(record.Name, record.Category, record.Price, record.Date)
 		if err != nil {
@@ -121,29 +116,27 @@ func InsertPricesWithStats(records []PriceRecord) (map[string]interface{}, error
 			continue
 		}
 		successfulInserts++
-		insertedRecords = append(insertedRecords, record)
 	}
 
-	// Вычисляем статистику по вставленным записям
-	totalItems := successfulInserts
-	categories := make(map[string]bool)
-	totalPrice := 0.0
-
-	for _, record := range insertedRecords {
-		categories[record.Category] = true
-		totalPrice += record.Price
+	var totalCategories int
+	var totalPrice float64
+	query := `
+		SELECT  
+			COUNT(DISTINCT category) as total_categories, 
+			COALESCE(SUM(price), 0) as total_price 
+		FROM prices
+	`
+	row := tx.QueryRow(query)
+	if err := row.Scan(&totalCategories, &totalPrice); err != nil {
+		return nil, fmt.Errorf("failed to fetch stats: %w", err)
 	}
 
-	totalCategories := len(categories)
-
-	// Коммитим транзакцию
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	// Возвращаем статистику только по вставленным записям
 	stats := map[string]interface{}{
-		"total_items":      totalItems,
+		"total_items":      successfulInserts,
 		"total_categories": totalCategories,
 		"total_price":      totalPrice,
 	}
@@ -174,32 +167,4 @@ func GetAllPrices() ([]Price, error) {
 	}
 
 	return prices, nil
-}
-
-func GetStats() (map[string]interface{}, error) {
-	stats := make(map[string]interface{})
-
-	// Тут сделал в одни запрос для всей статистики
-	var totalItems int
-	var totalCategories int
-	var totalPrice float64
-
-	query := `
-		SELECT 
-			COUNT(*) as total_items,
-			COUNT(DISTINCT category) as total_categories,
-			COALESCE(SUM(price), 0) as total_price
-		FROM prices
-	`
-
-	err := DB.QueryRow(query).Scan(&totalItems, &totalCategories, &totalPrice)
-	if err != nil {
-		return nil, err
-	}
-
-	stats["total_items"] = totalItems
-	stats["total_categories"] = totalCategories
-	stats["total_price"] = totalPrice
-
-	return stats, nil
 }
